@@ -3,6 +3,7 @@ using System.Windows.Forms;
 using GTA;
 using GTA.Math;
 using GTA.Native;
+using Control = GTA.Control;
 
 // SurvivalMoves - ScriptHookVDotNet v3
 // D-pad ซ้าย (จอย) / F6 (คีย์บอร์ด) = พันแผล  (เลือดค่อยๆ เพิ่ม)
