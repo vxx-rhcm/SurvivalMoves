@@ -10,5 +10,6 @@
       <HintPath>ScriptHookVDotNet3.dll</HintPath>
       <Private>false</Private>
     </Reference>
-  </ItemGroup><Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Windows.Forms" />
+  </ItemGroup>
 </Project>
