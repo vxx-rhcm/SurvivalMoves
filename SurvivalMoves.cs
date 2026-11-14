@@ -1,364 +1,300 @@
 using System;
-using System.Runtime.InteropServices;
 using GTA;
 using GTA.Math;
 using GTA.Native;
 
-/// <summary>
-/// SurvivalMoves - auto-starting ScriptHookVDotNet3 script.
-/// No menu, no enable/disable key, and no control-learning/debug UI.
-/// </summary>
-public sealed class SurvivalMoves : Script
+// SurvivalMoves v5 - ผูกกับปุ่มที่พอร์ตมีอยู่แล้ว ทำงานตั้งแต่เข้าเกม ไม่มีเมนู ไม่ต้องเปิด/ปิด
+//
+//   พันแผล  = ค้าง Aim (LT) แล้วแตะ Cover (RB)
+//   ใส่เกราะ = ค้าง Aim (LT) แล้วแตะปุ่มอาวุธ (LB)
+//   สไลด์   = ตอนวิ่ง (Sprint) แตะ Stealth (L3)
+//   คอมโบ LT ใช้ได้เฉพาะตอนมือเปล่า (ตั้ง ONLY_WHEN_UNARMED = false ถ้าอยากใช้ตลอด)
+//
+// สคริปต์นี้ไม่อ่าน/ไม่ปิดปุ่ม D-pad และปุ่ม Accept/Cancel เลย
+// เพื่อไม่ให้พอร์ตเข้าใจผิดว่ามีเมนูเปิดอยู่ (แผงลูกศร + X + ถูก บนจอ)
+public class SurvivalMoves : Script
 {
-    private const int ControlGroup = 0;
+    // ---------- ผูกปุ่ม (Control ID ของเกม; ใส่ได้หลายตัว) ----------
+    static readonly int[] MOD_IDS     = { (int)Control.Aim };          // LT  ค้างไว้
+    static readonly int[] BANDAGE_IDS = { (int)Control.Cover };        // RB  แตะ
+    static readonly int[] ARMOR_IDS   = { (int)Control.SelectWeapon }; // LB  แตะ
+    static readonly int[] SLIDE_IDS   = { (int)Control.Duck };         // L3 / Stealth  แตะตอนวิ่ง
 
-    // GTA V controls used by the original SurvivalMoves input scheme.
-    private const int AimControl = 25;       // LT / Aim
-    private const int CoverControl = 44;     // RB / Cover
-    private const int WeaponControl = 37;    // LB / Weapon selection
-    private const int SprintControl = 21;    // A / Sprint
-    private const int StealthControl = 36;   // L3 / Stealth (as shown by the supplied touch layout)
+    const bool ONLY_WHEN_UNARMED = true;
+    const bool LEARN_MODE = false;   // true = ขึ้นเลข Control ID ของปุ่มที่แตะ (ไม่สแกนปุ่มเมนู)
 
-    // Additional controls and keyboard fallbacks used by the original DLL.
-    private const int BandageDirectControl = 174;
-    private const int ArmorDirectControl = 175;
-    private const int BandageVirtualKey = 0x55; // U
-    private const int ArmorVirtualKey = 0x56;   // V
+    // ---------- ค่าต่างๆ ----------
+    const int   BANDAGE_TOTAL   = 60;
+    const int   BANDAGE_STEP    = 10;
+    const int   BANDAGE_TICK_MS = 500;
+    const int   BANDAGE_BASE_MS = 900;   // ช่วงท่า base ก่อนสลับเป็น idle_a
+    const int   ARMOR_ANIM_MS   = 1800;
+    const int   SLIDE_MS        = 700;   // ช่วงกำลังสไลด์ (run_slide)
+    const int   SLIDE_END_MS    = 450;   // ช่วงลุกขึ้นวิ่งต่อ (run_slide_end)
+    const float SLIDE_SPEED     = 8f;
+    const float SLIDE_RUN_SPEED = 4f;    // ความเร็วตอนลุกขึ้นวิ่งต่อ
 
-    private const int BandageTotal = 60;
-    private const int BandageStep = 10;
-    private const int BandageTickMs = 500;
-    private const int BandageDurationMs = 3000;
-    private const int ArmorDurationMs = 1800;
-    private const int SlideDurationMs = 900;
-    private const int DoubleTapMs = 600;
+    // ท่าพันแผล: base (เริ่ม) แล้วต่อด้วย idle_a
+    const string BANDAGE_DICT = "amb@medic@standing@tendtodead@base";
+    const string BANDAGE_ANIM = "base";
+    const string IDLE_DICT    = "amb@medic@standing@tendtodead@idle_a";
+    const string IDLE_ANIM    = "idle_a";
 
-    private const float SlideSpeed = 8.0f;
-    private const float SlideEndSpeed = 1.5f;
+    const string ARMOR_DICT = "clothingtie";
+    const string ARMOR_ANIM = "try_tie_positive_a";
 
-    private const string BandageIdleDict = "amb@medic@standing@kneel@idle_a";
-    private const string BandageIdleAnim = "idle_a";
-    private const string BandageFallbackDict = "amb@medic@standing@tendtodead@base";
-    private const string BandageFallbackAnim = "base";
-    private const string ArmorDict = "clothingtie";
-    private const string ArmorAnim = "try_tie_positive_a";
-    private const string SlideDict = "missheistfbi3b_ig6_v2";
-    private const string SlideAnim = "rubble_slide_franklin";
+    // ท่าสไลด์: จับคู่ dict กับคลิปตามลำดับ (ตัวที่ 0 คู่กับตัวที่ 0 ...)
+    static readonly string[] SLIDE_DICTS = { "anim@arena@celeb@flat@solo@no_props@", "missheistfbi3b_ig6_v2" };
+    static readonly string[] SLIDE_CLIPS = { "slide_a_player_a", "rubble_slide_franklin" };
+    const int SLIDE_PICK = -1;   // -1 = ใช้คู่แรกที่มีในเกม, 0 = บังคับ slide_a_player_a, 1 = บังคับ rubble_slide_franklin
+    const string SLIDE_FALLBACK_DICT = "move_jump";
+    const string SLIDE_FALLBACK_ANIM = "dive_start_run";
+    // -------------------------------------------
 
-    private readonly int[] _bandageIds = { CoverControl };
-    private readonly int[] _armorIds = { WeaponControl };
-    private readonly int[] _slideIds = { StealthControl };
+    // Control ID สำหรับโหมดเรียนรู้ (ไม่รวมปุ่มเมนู/D-pad 166-178)
+    static readonly int[] LEARN_IDS = BuildLearnIds();
 
-    private bool _previousU;
-    private bool _previousV;
+    bool introShown; int introUntil;
+    int learnUntil; string learnText = "";
 
-    private bool _bandaging;
-    private int _healRemaining;
-    private int _nextHealAt;
-    private int _bandageEndsAt;
-
-    private bool _armoring;
-    private int _armorEndsAt;
-    private bool _pendingArmor;
-    private int _lastArmorTapAt;
-
-    private bool _sliding;
-    private int _slideStartedAt;
-    private Vector3 _slideDirection;
-
-    [DllImport("user32.dll")]
-    private static extern short GetAsyncKeyState(int virtualKey);
+    bool bandaging; int healLeft; int nextHeal; int bandageStart; int bandageEnd; int bandagePhase;
+    bool armoring; int armorEnd;
+    bool sliding; int slideStart; int slideEndStart; int slidePhase; int slideIdx = -1; Vector3 slideDir;
 
     public SurvivalMoves()
     {
-        // SHVDN loads the script with the game; Tick keeps it running automatically.
         Tick += OnTick;
-        Aborted += OnAborted;
     }
 
-    private static int Now => Game.GameTime;
-
-    private static bool IsKeyDown(int virtualKey)
+    static int[] BuildLearnIds()
     {
-        return (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+        var list = new System.Collections.Generic.List<int>();
+        for (int i = 14; i <= 60; i++) list.Add(i);
+        for (int i = 140; i <= 146; i++) list.Add(i);
+        list.AddRange(new[] { 192, 193, 244, 245, 249, 257, 261, 262, 289, 290, 296, 297, 298, 299 });
+        return list.ToArray();
     }
 
-    private static bool IsControlDown(int control)
+    bool JustPressed(int id)
     {
-        return Function.Call<bool>(Hash.IS_CONTROL_PRESSED, ControlGroup, control);
+        return Function.Call<bool>(Hash.IS_DISABLED_CONTROL_JUST_PRESSED, 0, id);
     }
 
-    private static bool IsControlJustPressed(int control)
+    bool Held(int id)
     {
-        return Function.Call<bool>(Hash.IS_CONTROL_JUST_PRESSED, ControlGroup, control);
+        return Function.Call<bool>(Hash.IS_DISABLED_CONTROL_PRESSED, 0, id);
     }
 
-    private static void DisableControl(int control)
+    bool AnyJust(int[] ids)
     {
-        Function.Call(Hash.DISABLE_CONTROL_ACTION, ControlGroup, control, true);
-    }
-
-    private static void DisableControls(int[] controls)
-    {
-        foreach (int control in controls)
-            DisableControl(control);
-    }
-
-    private static bool AnyJustPressed(int[] controls)
-    {
-        foreach (int control in controls)
-        {
-            if (IsControlJustPressed(control))
-                return true;
-        }
+        for (int i = 0; i < ids.Length; i++) if (JustPressed(ids[i])) return true;
         return false;
     }
 
-    private static bool LoadAnimationDictionary(string dictionary)
+    bool AnyHeld(int[] ids)
     {
-        Function.Call(Hash.REQUEST_ANIM_DICT, dictionary);
-        for (int i = 0; i < 50; i++)
-        {
-            if (Function.Call<bool>(Hash.HAS_ANIM_DICT_LOADED, dictionary))
-                return true;
-            Script.Yield();
-        }
-        return Function.Call<bool>(Hash.HAS_ANIM_DICT_LOADED, dictionary);
+        for (int i = 0; i < ids.Length; i++) if (Held(ids[i])) return true;
+        return false;
     }
 
-    private static bool PlayAnimation(Ped ped, string dictionary, string animation,
-        int durationMs, int flags)
+    void DisableAll(int[] ids)
     {
-        if (ped == null || !ped.Exists() || !LoadAnimationDictionary(dictionary))
-            return false;
+        for (int i = 0; i < ids.Length; i++)
+            Function.Call(Hash.DISABLE_CONTROL_ACTION, 0, ids[i], true);
+    }
 
-        Function.Call(Hash.TASK_PLAY_ANIM, ped, dictionary, animation,
-            8.0f, -8.0f, durationMs, flags, 0.0f, false, false, false);
+    bool LoadDict(string dict)
+    {
+        if (string.IsNullOrEmpty(dict)) return false;
+        if (!Function.Call<bool>(Hash.DOES_ANIM_DICT_EXIST, dict)) return false;
+        Function.Call(Hash.REQUEST_ANIM_DICT, dict);
+        int tries = 0;
+        while (!Function.Call<bool>(Hash.HAS_ANIM_DICT_LOADED, dict) && tries++ < 50)
+            Script.Yield();
+        return Function.Call<bool>(Hash.HAS_ANIM_DICT_LOADED, dict);
+    }
+
+    bool PlayAnim(Ped p, string dict, string anim, int ms, int flag)
+    {
+        if (!LoadDict(dict)) return false;
+        Function.Call(Hash.TASK_PLAY_ANIM, p, dict, anim, 8f, -8f, ms, flag, 0f, false, false, false);
         return true;
     }
 
-    private static void StopAnimation(Ped ped, string dictionary, string animation)
+    void StopAnim(Ped p, string dict, string anim)
     {
-        if (ped == null || !ped.Exists())
-            return;
-
-        Function.Call(Hash.STOP_ANIM_TASK, ped, dictionary, animation, 1.0f);
+        if (string.IsNullOrEmpty(dict)) return;
+        Function.Call(Hash.STOP_ANIM_TASK, p, dict, anim, 1f);
     }
 
-    private static void StopBandageAnimations(Ped ped)
+    void StopBandageAnims(Ped p)
     {
-        StopAnimation(ped, BandageIdleDict, BandageIdleAnim);
-        StopAnimation(ped, BandageFallbackDict, BandageFallbackAnim);
+        StopAnim(p, BANDAGE_DICT, BANDAGE_ANIM);
+        StopAnim(p, IDLE_DICT, IDLE_ANIM);
     }
 
-    private void StartBandage(Ped ped, int now)
+    void StopSlideAnims(Ped p)
     {
-        if (_bandaging || _sliding || ped.Health >= ped.MaxHealth)
-            return;
-
-        _bandaging = true;
-        _healRemaining = BandageTotal;
-        _nextHealAt = now + BandageTickMs;
-        _bandageEndsAt = now + BandageDurationMs;
-
-        // Prefer idle_a; use the original tend-to-dead base animation only as fallback.
-        if (!PlayAnimation(ped, BandageIdleDict, BandageIdleAnim,
-            BandageDurationMs, 49))
-        {
-            PlayAnimation(ped, BandageFallbackDict, BandageFallbackAnim,
-                BandageDurationMs, 49);
-        }
+        for (int i = 0; i < SLIDE_DICTS.Length; i++) StopAnim(p, SLIDE_DICTS[i], SLIDE_CLIPS[i]);
+        StopAnim(p, SLIDE_FALLBACK_DICT, SLIDE_FALLBACK_ANIM);
     }
 
-    private void StartArmor(Ped ped, int now)
+    void Learn(int now)
     {
-        if (_armoring || _sliding || ped.Armor >= 100)
-            return;
-
-        _armoring = true;
-        _armorEndsAt = now + ArmorDurationMs;
-        PlayAnimation(ped, ArmorDict, ArmorAnim, ArmorDurationMs, 49);
+        string found = "";
+        for (int i = 0; i < LEARN_IDS.Length; i++)
+            if (JustPressed(LEARN_IDS[i])) found += (found.Length > 0 ? ", " : "") + LEARN_IDS[i];
+        if (found.Length > 0) { learnText = "ctrl " + found; learnUntil = now + 2500; }
+        if (now < learnUntil) GTA.UI.Screen.ShowSubtitle(learnText, 100);
     }
 
-    private void StartSlide(Ped ped, int now)
+    void OnTick(object sender, EventArgs e)
     {
-        if (_sliding || ped == null || !ped.Exists() || !ped.IsSprinting)
-            return;
+        Ped p = Game.Player.Character;
+        bool alive = p != null && p.Exists() && !p.IsDead;
+        int now = Game.GameTime;
+        if (!alive) { sliding = false; return; }
 
-        if (_armoring)
+        if (LEARN_MODE) Learn(now);
+
+        if (!introShown) { introShown = true; introUntil = now + 6000; }
+        if (now < introUntil && !(LEARN_MODE && now < learnUntil))
+            GTA.UI.Screen.ShowSubtitle("SurvivalMoves: hold Aim + Cover = bandage, Aim + Weapon = armor, Sprint + Stealth = slide", 100);
+
+        if (p.IsInVehicle()) { sliding = false; return; }
+
+        // ---------- คอมโบกับปุ่มของพอร์ต ----------
+        bool comboOk = !ONLY_WHEN_UNARMED || p.Weapons.Current.Hash == WeaponHash.Unarmed;
+        bool mod = comboOk && AnyHeld(MOD_IDS);
+        if (mod)
         {
-            _armoring = false;
-            StopAnimation(ped, ArmorDict, ArmorAnim);
+            DisableAll(BANDAGE_IDS);   // กัน Cover / วงล้ออาวุธ ทำงานซ้อน
+            DisableAll(ARMOR_IDS);
         }
+        bool sprinting = p.IsSprinting;
+        if (sprinting) DisableAll(SLIDE_IDS);   // กัน Stealth สลับโหมดตอนวิ่ง
 
-        if (_bandaging)
+        if (mod && AnyJust(BANDAGE_IDS)) StartBandage(p, now);
+        if (mod && AnyJust(ARMOR_IDS)) StartArmor(p, now);
+        if (sprinting && AnyJust(SLIDE_IDS)) StartSlide(p, now);
+
+        // ---------- พันแผล ----------
+        if (bandaging)
         {
-            _bandaging = false;
-            StopBandageAnimations(ped);
-        }
-
-        _sliding = true;
-        _slideStartedAt = now;
-        _slideDirection = ped.ForwardVector;
-
-        // Correct slide animation from the user's ThaiMoves reference DLL.
-        PlayAnimation(ped, SlideDict, SlideAnim, SlideDurationMs, 0);
-    }
-
-    private void UpdateBandage(Ped ped, int now)
-    {
-        if (!_bandaging)
-            return;
-
-        if (now >= _nextHealAt && _healRemaining > 0)
-        {
-            ped.Health = Math.Min(ped.MaxHealth, ped.Health + BandageStep);
-            _healRemaining -= BandageStep;
-            _nextHealAt = now + BandageTickMs;
-        }
-
-        if (_healRemaining <= 0 || now >= _bandageEndsAt || ped.Health >= ped.MaxHealth)
-        {
-            _bandaging = false;
-            StopBandageAnimations(ped);
-        }
-    }
-
-    private void UpdateArmor(Ped ped, int now)
-    {
-        if (!_armoring || now < _armorEndsAt)
-            return;
-
-        _armoring = false;
-        ped.Armor = 100;
-        StopAnimation(ped, ArmorDict, ArmorAnim);
-    }
-
-    private void UpdateSlide(Ped ped, int now)
-    {
-        if (!_sliding)
-            return;
-
-        int elapsed = now - _slideStartedAt;
-        if (elapsed >= SlideDurationMs)
-        {
-            _sliding = false;
-            StopAnimation(ped, SlideDict, SlideAnim);
-            return;
-        }
-
-        float progress = Math.Max(0.0f, Math.Min(1.0f,
-            (float)elapsed / SlideDurationMs));
-        float speed = SlideSpeed * (1.0f - progress) + SlideEndSpeed;
-        Vector3 velocity = _slideDirection * speed;
-        velocity.Z = ped.Velocity.Z;
-        ped.Velocity = velocity;
-    }
-
-    private void OnTick(object sender, EventArgs e)
-    {
-        Ped ped = Game.Player.Character;
-        if (ped == null || !ped.Exists() || ped.IsDead || ped.IsInVehicle())
-        {
-            _sliding = false;
-            _bandaging = false;
-            _armoring = false;
-            _pendingArmor = false;
-            return;
-        }
-
-        int now = Now;
-        bool uDown = IsKeyDown(BandageVirtualKey);
-        bool vDown = IsKeyDown(ArmorVirtualKey);
-        bool uPressed = uDown && !_previousU;
-        bool vPressed = vDown && !_previousV;
-        _previousU = uDown;
-        _previousV = vDown;
-
-        bool unarmed = ped.Weapons.Current.Hash == WeaponHash.Unarmed;
-        bool aimModifier = unarmed && IsControlDown(AimControl);
-        bool sprinting = ped.IsSprinting;
-
-        // Consume the normal game actions when they are being used as modifiers.
-        if (aimModifier)
-            DisableControls(_bandageIds.Length > 0 && _armorIds.Length > 0
-                ? new[] { CoverControl, WeaponControl }
-                : Array.Empty<int>());
-        if (sprinting)
-            DisableControls(_slideIds);
-
-        bool bandageCommand = IsControlJustPressed(BandageDirectControl) || uPressed;
-        bool armorCommand = IsControlJustPressed(ArmorDirectControl) || vPressed;
-        bool bandageCombo = aimModifier && AnyJustPressed(_bandageIds);
-        bool armorCombo = aimModifier && AnyJustPressed(_armorIds);
-        bool slideCombo = sprinting && AnyJustPressed(_slideIds);
-
-        if (bandageCombo)
-            bandageCommand = true;
-
-        if (bandageCommand)
-            StartBandage(ped, now);
-
-        // Aim + Weapon starts armor immediately. The V/side-button path retains
-        // the original double-tap-to-slide behavior while sprinting.
-        if (armorCombo)
-        {
-            _pendingArmor = false;
-            _lastArmorTapAt = 0;
-            StartArmor(ped, now);
-        }
-        else if (armorCommand)
-        {
-            if (sprinting)
+            if (bandagePhase == 0 && now - bandageStart >= BANDAGE_BASE_MS)
             {
-                if (_lastArmorTapAt > 0 && now - _lastArmorTapAt < DoubleTapMs)
+                bandagePhase = 1;
+                if (!PlayAnim(p, IDLE_DICT, IDLE_ANIM, Math.Max(500, bandageEnd - now), 49))
+                    PlayAnim(p, BANDAGE_DICT, BANDAGE_ANIM, Math.Max(500, bandageEnd - now), 49);
+            }
+            if (now >= nextHeal && healLeft > 0)
+            {
+                p.Health = Math.Min(p.MaxHealth, p.Health + BANDAGE_STEP);
+                healLeft -= BANDAGE_STEP;
+                nextHeal = now + BANDAGE_TICK_MS;
+            }
+            if (healLeft <= 0 || now >= bandageEnd || p.Health >= p.MaxHealth)
+            {
+                bandaging = false;
+                StopBandageAnims(p);
+            }
+        }
+
+        // ---------- ใส่เกราะ ----------
+        if (armoring && now >= armorEnd)
+        {
+            armoring = false;
+            p.Armor = 100;
+            StopAnim(p, ARMOR_DICT, ARMOR_ANIM);
+            GTA.UI.Screen.ShowSubtitle("Armor on");
+        }
+
+        // ตัวถึกขึ้นเมื่อมีเกราะ: ไม่โดนฮิตคริติคอล และล้มยากขึ้น
+        bool armored = p.Armor > 0;
+        Function.Call(Hash.SET_PED_SUFFERS_CRITICAL_HITS, p, !armored);
+        Function.Call(Hash.SET_PED_CAN_RAGDOLL_FROM_PLAYER_IMPACT, p, !armored);
+
+        // ---------- สไลด์ ----------
+        if (sliding)
+        {
+            if (slidePhase == 0)
+            {
+                int t = now - slideStart;
+                if (t >= SLIDE_MS)
                 {
-                    _pendingArmor = false;
-                    _lastArmorTapAt = 0;
-                    StartSlide(ped, now);
+                    // เปลี่ยนเป็นช่วงลุกขึ้นวิ่งต่อ: หยุดท่าสไลด์ให้ตัวละครลุกกลับมาวิ่ง
+                    slidePhase = 1;
+                    slideEndStart = now;
+                    StopSlideAnims(p);
                 }
                 else
                 {
-                    _lastArmorTapAt = now;
-                    _pendingArmor = true;
+                    float speed = SLIDE_SPEED * (1f - (float)t / SLIDE_MS) + SLIDE_RUN_SPEED;
+                    Vector3 v = slideDir * speed;
+                    v.Z = p.Velocity.Z;
+                    p.Velocity = v;
                 }
             }
-            else
+            if (slidePhase == 1)
             {
-                _pendingArmor = false;
-                _lastArmorTapAt = 0;
-                StartArmor(ped, now);
+                if (now - slideEndStart >= SLIDE_END_MS)
+                {
+                    sliding = false;
+                    StopSlideAnims(p);
+                }
+                else
+                {
+                    Vector3 v = slideDir * SLIDE_RUN_SPEED;
+                    v.Z = p.Velocity.Z;
+                    p.Velocity = v;
+                }
             }
         }
-
-        if (slideCombo)
-        {
-            _pendingArmor = false;
-            _lastArmorTapAt = 0;
-            StartSlide(ped, now);
-        }
-
-        if (_pendingArmor && now - _lastArmorTapAt > DoubleTapMs)
-        {
-            _pendingArmor = false;
-            _lastArmorTapAt = 0;
-            if (!_sliding)
-                StartArmor(ped, now);
-        }
-
-        UpdateBandage(ped, now);
-        UpdateArmor(ped, now);
-        UpdateSlide(ped, now);
     }
 
-    private void OnAborted(object sender, EventArgs e)
+    void StartBandage(Ped p, int now)
     {
-        Ped ped = Game.Player.Character;
-        if (ped != null && ped.Exists())
+        if (bandaging || sliding) return;
+        if (p.Health >= p.MaxHealth) { GTA.UI.Screen.ShowSubtitle("Health is already full"); return; }
+        bandaging = true;
+        bandagePhase = 0;
+        healLeft = BANDAGE_TOTAL;
+        bandageStart = now;
+        nextHeal = now + BANDAGE_TICK_MS;
+        bandageEnd = now + (BANDAGE_TOTAL / BANDAGE_STEP) * BANDAGE_TICK_MS;
+        PlayAnim(p, BANDAGE_DICT, BANDAGE_ANIM, BANDAGE_BASE_MS, 49);
+    }
+
+    void StartArmor(Ped p, int now)
+    {
+        if (armoring || sliding) return;
+        if (p.Armor >= 100) { GTA.UI.Screen.ShowSubtitle("Armor is already full"); return; }
+        armoring = true;
+        armorEnd = now + ARMOR_ANIM_MS;
+        PlayAnim(p, ARMOR_DICT, ARMOR_ANIM, ARMOR_ANIM_MS, 49);
+    }
+
+    void StartSlide(Ped p, int now)
+    {
+        if (sliding) return;
+        if (armoring) { armoring = false; StopAnim(p, ARMOR_DICT, ARMOR_ANIM); }
+        if (bandaging) { bandaging = false; StopBandageAnims(p); }
+        sliding = true;
+        slidePhase = 0;
+        slideStart = now;
+        slideDir = p.ForwardVector;
+        // เลือกท่าสไลด์: บังคับด้วย SLIDE_PICK หรือใช้คู่แรกที่มี dict ในเกม
+        slideIdx = -1;
+        if (SLIDE_PICK >= 0 && SLIDE_PICK < SLIDE_DICTS.Length)
         {
-            StopBandageAnimations(ped);
-            StopAnimation(ped, ArmorDict, ArmorAnim);
-            StopAnimation(ped, SlideDict, SlideAnim);
+            if (PlayAnim(p, SLIDE_DICTS[SLIDE_PICK], SLIDE_CLIPS[SLIDE_PICK], SLIDE_MS + 200, 1)) slideIdx = SLIDE_PICK;
         }
+        else
+        {
+            for (int i = 0; i < SLIDE_DICTS.Length && slideIdx < 0; i++)
+                if (PlayAnim(p, SLIDE_DICTS[i], SLIDE_CLIPS[i], SLIDE_MS + 200, 1)) slideIdx = i;
+        }
+        if (slideIdx < 0)
+            PlayAnim(p, SLIDE_FALLBACK_DICT, SLIDE_FALLBACK_ANIM, SLIDE_MS, 0);
     }
 }
